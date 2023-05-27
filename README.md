@@ -1,2 +1,2 @@
 # SchoolReports
-A collection of project reports from my time as a UT undergrad
+A collection of reports from a few of my UT undergrad projects
