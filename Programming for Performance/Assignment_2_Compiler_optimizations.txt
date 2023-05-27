@@ -1,0 +1,114 @@
+CS377P Assignment 2
+Matthew Jagen
+mtj595
+9/21/22
+
+3.
+i)
+testFunction:
+        testl   %esi, %esi              ; Test the value of length, which is passed in register esi as a 64-bit value
+        jle     .L4                     ; If this value is less than or equal to zero, jump to L4
+        movq    %rdi, %rax              ; Move the starting address of the array input, passed in register rdi, to register rax
+        leal    -1(%rsi), %edx          ; compute length - 1 and set it in register rdx (caller-save)
+        leaq    4(%rdi,%rdx,4), %rcx    ; compute the address of input[(length-1)+1] (aka past the last element in the arr) and save to register rcx
+        movl    $0, %edx                ; set register rdx (the register used to compute length-1) to 0
+.L3:                
+        addl    (%rax), %edx            ; add the element of the input array (pointed to by register rax) to register rdx 
+        addq    $4, %rax                ; increment the array pointer by 4 bytes so that it points to the next element
+        cmpq    %rcx, %rax              ; compare the ending address stored in register rcx to current indexing address stored in rax
+        jne     .L3                     ; if the result of rax-rcx is not 0, jump to L3 (continue loop)
+.L1:                
+        movl    %edx, %eax              ; move the contents of register rdx (sum of array elements) to register rax
+        ret                             ; return from testFunction with array element sum in register rax
+.L4:                
+        movl    $0, %edx                ; set register tracking sum of array elements to 0 (we only do this if length was <= 0)
+        jmp     .L1                     ; jump to L1 (intention to return from testFunction)
+
+ii)
+testFunction is called with the array pointer parameter in %rdi and the length parameter in %esi.
+The length parameter in %esi is checked to be <= 0, if it is then we set the sum to 0 in L4 and then return in L1.
+If length is greater than zero, we continue by copying the array address to %rax to use the register for later iteration through the array.
+Then, we calculate the memory address past the last element of the array and store it in %rcx and set the current sum of elements (tracked in %edx) to 0.
+L3 is the body of the loop, and starts by adding the element of the array pointed to by %rax to the running sum and then incrementing %rax so that it points to the next element.
+The loop continues back at L3 if %rax (current indexing address) is not equal to %rcx (final address we calculated earlier).
+If it is, then we set the return value (%eax) to the sum that we calculated (%edx)
+
+4.
+
+testFunction:
+        testl   %esi, %esi              ; Test the value of length
+        jle     .L7                     ; Jump to L7 if length is less than or equal to 0
+        leal    -1(%rsi), %eax          ; set %eax to length - 1
+        cmpl    $3, %eax                ; compare %eax to 3 ; set flags based on (length-1)-3
+        jbe     .L8                     ; jump to L8 if array is 4 or fewer elements (length - 1 <= 3)
+        movl    %esi, %edx              ; copy length into %edx
+        movq    %rdi, %rax              ; copy base address of array into %rax
+        pxor    %xmm0, %xmm0            ; set 128-bit register %xmm0 to 0 by xor with itself
+        shrl    $2, %edx                ; arithmetic right shift %edx (copy of length) by 2; aka div length_cpy by 4; this tells us how many full groups of 4 ints there are
+        salq    $4, %rdx                ; left shift %rdx by 4; aka mult by 16; this converts the number of 4 group ints into its size in bytes (16 bytes per 4 ints)
+        addq    %rdi, %rdx              ; add the base address of the array to rdx; rdx now holds the ending address of the vectorized loop body in L4
+.L4:                                    
+        movdqu  (%rax), %xmm2           ; copy (as a chunk of 16 bytes) four ints from the array at the address held by %rax into %xmm2
+        addq    $16, %rax               ; add 16 to %rax so that it holds the address of the next four ints in the array
+        paddd   %xmm2, %xmm0            ; packed add the two double quadword registers and store the result in %xmm0; adds first double word of %xmm2 to first double word of %xmm0, second to second, etc
+        cmpq    %rdx, %rax              ; compare the arr indexing address of the next four ints (%rax) to our previously-calculated stopping point (%rdx)
+        jne     .L4                     ; if %rax isn't equal to our stopping point, jump to L4 and iterate again
+        movdqa  %xmm0, %xmm1            ; copy the contents of %xmm0 (currently our array sum but split into 4 groups) to %xmm1
+        movl    %esi, %edx              ; copy length into %edx
+        psrldq  $8, %xmm1               ; logical right shift %xmm1 by 8 bytes; this moves the upper two double words of %xmm1 into the spot of the lower two and zero pads the vacuum with 0s
+        andl    $-4, %edx               ; bitwise AND %edx (length) with -4 (...1111100); this zeroes-out bottom two bits of %edx; equivalent to number of elements we accessed in L4 loop
+        paddd   %xmm1, %xmm0            ; adds the shifted copy of %xmm0 (held in %xmm1) back to itself; %xmm0 now holds: {double word 1, dw2, (dw3 + dw1), (dw4 + dw2)} (where each 'spot' is 32 bits)
+        movdqa  %xmm0, %xmm1            ; copies new %xmm0 value back into %xmm1 
+        psrldq  $4, %xmm1               ; right shifts new %xmm1 4 bytes so that the upper three double words are now the lower three, padding the open space with 0s
+        paddd   %xmm1, %xmm0            ; adds the shifted %xmm1 back to %xmm0; %xmm0 now holds: {dw1, (dw2 + dw1), (dw3 + dw1 + dw2), (dw4 + dw2 + dw3 + dw1)}
+        movd    %xmm0, %eax             ; copies the low doubleword of %xmm0 (the sum of all 4 groups) into %eax; %eax now holds the sum of the first (len - len%4) elements
+        testb   $3, %sil                ; sets condition flags according to bitwise AND of 3 and %sil (lower byte of %esi AKA length); 
+        je      .L11                    ; jump to L11 if 0 flag was set; jumps if lower two bits of length were 0 (length % 4 == 0)
+.L3:                                    
+        movslq  %edx, %rcx              ; move and sign-extend the contents of 4-byte $edx to 8-byte $rcx; this is the number of elements already summed up
+        addl    (%rdi,%rcx,4), %eax     ; add %rcx*4 to the arr base address and add the contents of that memory location to %eax; this adds the first of the remaining elements to our running sum
+        leal    1(%rdx), %ecx           ; set %ecx to new number of elements summed (old number + 1)
+        cmpl    %ecx, %esi              ; compare length to number of elements summed
+        jle     .L1                     ; jump to L1 if length is less than or equal to number of elements summed (we've added all the elements)
+        movslq  %ecx, %rcx              ; move and sign-extend the contents of 4-byte $ecx to 8-byte $rcx; this is the new/current number of elements already summed up
+        addl    (%rdi,%rcx,4), %eax     ; add %rcx*4 to the arr base address and add the contents of that memory location to %eax; this adds the second of the remaining elements to our running sum
+        leal    2(%rdx), %ecx           ; set %ecx to new number of elements summed (old number + 2)
+        cmpl    %ecx, %esi              ; compare length to number of elements summed
+        jle     .L1                     ; jump to L1 if length is less than or equal to number of elements summed (we've added all the elements)
+        movslq  %ecx, %rcx              ; move and sign-extend the contents of 4-byte $ecx to 8-byte $rcx; this is the new/current number of elements already summed up
+        addl    $3, %edx                ; add 3 to the old number of elements summed up so that it now represents the current number of summed elements (after the next line/add)
+        addl    (%rdi,%rcx,4), %eax     ; add %rcx*4 to the arr base address and add the contents of that memory location to %eax; this adds the third of the remaining elements to our running sum
+        cmpl    %edx, %esi              ; compare length to number of elements summed
+        jle     .L1                     ; jump to L1 if length is less than or equal to number of elements summed (we've added all the elements)
+        movslq  %edx, %rdx              ; sign extend the bottom 32 bits of %rdx (%edx) to the upper 32 bits; still holds the number of elements we've summed so far
+        addl    (%rdi,%rdx,4), %eax     ; adds the fourth and final remaining element in the array to the sum; this only happens if the initial jbe to L8 was taken
+        ret                             ; return with sum in %eax
+.L7:                                    
+        xorl    %eax, %eax              ; set %eax to 0; xor with itself (which will always be 0) is an optimization over movl $0, $eax
+.L1:                                    
+        ret                             ; return with sum in %eax
+.L11:                                   
+        ret                             ; return with sum in %eax
+.L8:                                    
+        xorl    %edx, %edx              ; set %edx to 0; optimized by using xor with itself instead of mov
+        xorl    %eax, %eax              ; set %eax to 0; optimized by using xor with itself instead of mov
+        jmp     .L3                     ; jump to L3
+
+ii)
+This code first splits into three cases. The first case it checks for is if the length is <= 0, where it just sets %eax to 0 and returns.
+The second case is if there are 4 or fewer elements, where it just skips the vecorization done in L4 and just adds them up one by one.
+The last case is when there are 5 or more elements, where it gets a bit more complex. In this case, the code breaks up the array into chunks of four ints.
+It copies these chunks from memory one-by-one and adds them to the 128-bit register %xmm0, such that the first 32 bits of %xmm0 becomes the sum of each chunk's first int, the second 32 bits becomes the sum of each chunk's second int, etc.
+Once it has iterated through every complete 4-int chunk, it adds up the four groups of sums by copying %xmm0 and right shifting the copy so that g1 and g3 occupy the same relative bits, and g2 and g4 occupy the same relative bits.
+It then adds the shifted copy back to %xmm0 to complete the addition simultaneously before making another copy and right shifting again to add (g1 and g3) and (g2 and g4) together into the lower 32 bits of %xmm0.
+it then has some cleanup code on the tail of the vectorization to add the remaining 1-3 elements that didn't form a complete group earlier (if there are any) and returns the sum in %eax (this code also handles the 1-4 elements case mentioned earlier).  
+
+5.
+The primary optimization performed by the compiler with optimization level O3 that is not performed with optimization level O1 is the loop vectorization.
+The vectorization done by the compiler using the 128-bit vector registers and vector instructions allows a single instruction to operate on multiple pieces of data (SIMD).
+This occurs during the retrieval of elements from memory as 4-element 128 bit chunks and when adding those chunks to the %xmm0 register (also later when adding the groups of the register together).
+Another optimization done is the loop unrolling of the cleanup code, which the compiler also executes instead of the vector code when the array is 4 elements long.
+The last optimization that was mentioned in lecture that I noticed was a few instances of strength reduction throughout the code. 
+When calculating the address to stop the loop at, the O3 code used right shift to do integer division and left shift instead of multiplication.
+On multiple instances, the compiler also used xor (and pxor) to zero-out a register instead of doing a mov instruction like the O1 code.
+
